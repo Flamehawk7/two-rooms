@@ -1,0 +1,31 @@
+.reaction-zone {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    height: 220px;
+    border-radius: 0.5rem;
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: white;
+    cursor: pointer;
+    user-select: none;
+    transition: background-color 0.1s ease-in-out;
+}
+
+.reaction-zone:focus {
+    outline: 3px solid #0d6efd;
+    outline-offset: 2px;
+}
+
+.zone-idle {
+    background-color: #6c757d;
+}
+
+.zone-armed {
+    background-color: #b02a37;
+}
+
+.zone-signal {
+    background-color: #198754;
+}

@@ -1,0 +1,306 @@
+@page "/duel"
+@using Microsoft.AspNetCore.SignalR.Client
+@using TwoRooms.Client.Game
+@implements IAsyncDisposable
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+<PageTitle>Reaction Duel</PageTitle>
+
+<h1>Reaction Duel</h1>
+<p class="text-muted">
+    Warm-up proof of concept for the Two Rooms session pipeline. Both players see the same
+    signal here &mdash; first to react wins the round, first to @GameConstants.WinsNeededForMatch
+    round wins takes the match.
+</p>
+
+@if (_stage == Stage.Join)
+{
+    <div class="card p-3" style="max-width: 420px;">
+        <div class="mb-3">
+            <label class="form-label">Your name</label>
+            <input class="form-control" @bind="_playerName" @bind:event="oninput" maxlength="24" />
+        </div>
+        <div class="mb-3">
+            <label class="form-label">Session code</label>
+            <div class="input-group">
+                <input class="form-control" @bind="_sessionCode" @bind:event="oninput" maxlength="8"
+                       placeholder="e.g. FOX7" />
+                <button class="btn btn-outline-secondary" type="button" @onclick="GenerateCode">New Code</button>
+            </div>
+            <div class="form-text">Share this code with your opponent so they can join the same session.</div>
+        </div>
+        @if (_joinError is not null)
+        {
+            <div class="alert alert-danger py-2">@_joinError</div>
+        }
+        <button class="btn btn-primary" disabled="@_connecting" @onclick="JoinAsync">
+            @(_connecting ? "Connecting..." : "Join Session")
+        </button>
+    </div>
+}
+else
+{
+    <div class="mb-3">
+        <strong>Session:</strong> @_sessionCode &nbsp;|&nbsp;
+        <strong>You:</strong> @_mySeat
+        <button class="btn btn-sm btn-outline-secondary ms-3" @onclick="LeaveAsync">Leave</button>
+    </div>
+
+    <div class="mb-3">
+        @foreach (var p in _players)
+        {
+            <span class="badge @(p.IsConnected ? "bg-success" : "bg-secondary") me-2">
+                @p.Name (@p.Seat) @(p.IsConnected ? "" : "- disconnected")
+            </span>
+        }
+    </div>
+
+    <div class="mb-3">
+        <strong>Round wins:</strong> A @_score.WinsA &ndash; @_score.WinsB B
+        &nbsp;|&nbsp;
+        <strong>Matches won:</strong> A @_score.MatchesWonA &ndash; @_score.MatchesWonB B
+    </div>
+
+    <div class="reaction-zone @ZoneCssClass" tabindex="0" @onclick="ReactAsync" @onkeydown="HandleKeyDown">
+        @switch (_stage)
+        {
+            case Stage.Waiting:
+                <span>Waiting for a second player to join session "@_sessionCode"...</span>
+                break;
+            case Stage.Ready:
+                <span>Both players connected. Click "Start Round" when ready.</span>
+                break;
+            case Stage.Armed:
+                <span>Wait for it...</span>
+                break;
+            case Stage.Signal:
+                <span>REACT NOW!</span>
+                break;
+            case Stage.RoundResult:
+                <span>@RoundResultText()</span>
+                break;
+            case Stage.MatchOver:
+                <span>@MatchOverText()</span>
+                break;
+        }
+    </div>
+
+    <div class="mt-3">
+        @if (_stage is Stage.Ready or Stage.RoundResult or Stage.MatchOver)
+        {
+            <button class="btn btn-primary" disabled="@(!_bothConnected)" @onclick="StartRoundAsync">
+                @(_stage == Stage.MatchOver ? "Start Next Match" : "Start Round")
+            </button>
+        }
+    </div>
+}
+
+@code {
+    private enum Stage { Join, Waiting, Ready, Armed, Signal, RoundResult, MatchOver }
+
+    private Stage _stage = Stage.Join;
+    private HubConnection? _hub;
+
+    private string _playerName = "";
+    private string _sessionCode = "";
+    private string? _joinError;
+    private bool _connecting;
+
+    private SessionSeat _mySeat;
+    private IReadOnlyList<PlayerInfo> _players = [];
+    private bool _bothConnected;
+    private MatchScore _score = MatchScore.Empty;
+    private RoundResultMessage? _lastResult;
+    private MatchOverMessage? _lastMatchOver;
+
+    private string ZoneCssClass => _stage switch
+    {
+        Stage.Signal => "zone-signal",
+        Stage.Armed => "zone-armed",
+        _ => "zone-idle"
+    };
+
+    private void GenerateCode()
+    {
+        const string alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        Span<char> chars = stackalloc char[4];
+        for (var i = 0; i < chars.Length; i++)
+        {
+            chars[i] = alphabet[Random.Shared.Next(alphabet.Length)];
+        }
+        _sessionCode = new string(chars);
+    }
+
+    private async Task JoinAsync()
+    {
+        _joinError = null;
+        if (string.IsNullOrWhiteSpace(_playerName) || string.IsNullOrWhiteSpace(_sessionCode))
+        {
+            _joinError = "Enter a name and a session code.";
+            return;
+        }
+
+        _connecting = true;
+        try
+        {
+            var hub = new HubConnectionBuilder()
+                .WithUrl(Navigation.ToAbsoluteUri(GameConstants.HubPath))
+                .WithAutomaticReconnect()
+                .Build();
+
+            RegisterHandlers(hub);
+            await hub.StartAsync();
+
+            var token = await GetOrCreatePlayerTokenAsync();
+            var result = await hub.InvokeAsync<JoinSessionResult>("JoinSession", _sessionCode, _playerName, token);
+            if (!result.Success)
+            {
+                _joinError = result.Error;
+                await hub.DisposeAsync();
+                return;
+            }
+
+            _hub = hub;
+            _mySeat = result.Seat;
+            _sessionCode = result.SessionCode;
+            _stage = Stage.Waiting;
+        }
+        catch (Exception ex)
+        {
+            _joinError = $"Could not connect: {ex.Message}";
+        }
+        finally
+        {
+            _connecting = false;
+        }
+    }
+
+    private async Task LeaveAsync()
+    {
+        if (_hub is not null)
+        {
+            await _hub.DisposeAsync();
+            _hub = null;
+        }
+        _stage = Stage.Join;
+        _players = [];
+        _score = MatchScore.Empty;
+        _lastResult = null;
+        _lastMatchOver = null;
+        _joinError = null;
+    }
+
+    private async Task<string> GetOrCreatePlayerTokenAsync()
+    {
+        var token = await JS.InvokeAsync<string?>("sessionStorage.getItem", "tworooms.playerToken");
+        if (string.IsNullOrEmpty(token))
+        {
+            token = Guid.NewGuid().ToString("N");
+            await JS.InvokeVoidAsync("sessionStorage.setItem", "tworooms.playerToken", token);
+        }
+        return token;
+    }
+
+    private async Task StartRoundAsync()
+    {
+        if (_hub is null || !_bothConnected) return;
+        await _hub.SendAsync("StartRound", _sessionCode);
+    }
+
+    private async Task ReactAsync()
+    {
+        if (_hub is null) return;
+        if (_stage is not (Stage.Armed or Stage.Signal)) return;
+        await _hub.SendAsync("React", _sessionCode);
+    }
+
+    private async Task HandleKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
+    {
+        if (e.Key is " " or "Enter" or "Spacebar")
+        {
+            await ReactAsync();
+        }
+    }
+
+    private string RoundResultText()
+    {
+        if (_lastResult is null) return "";
+        if (_lastResult.FalseStart)
+        {
+            var faulter = _lastResult.FalseStartBy == _mySeat ? "You" : "Your opponent";
+            return $"{faulter} reacted too early! Point to seat {_lastResult.Winner}.";
+        }
+        var winner = _lastResult.Winner == _mySeat ? "You" : "Your opponent";
+        return $"{winner} won the round in {_lastResult.ReactionTimeMs} ms.";
+    }
+
+    private string MatchOverText()
+    {
+        if (_lastMatchOver is null) return "";
+        var winner = _lastMatchOver.Winner == _mySeat ? "You" : "Your opponent";
+        return $"{winner} won the match {Math.Max(_lastMatchOver.Score.MatchesWonA, _lastMatchOver.Score.MatchesWonB)}!";
+    }
+
+    private void RegisterHandlers(HubConnection hub)
+    {
+        hub.On<SessionStateUpdate>("OnSessionState", async update =>
+        {
+            _players = update.Players;
+            _bothConnected = update.BothConnected;
+            if (!update.BothConnected)
+            {
+                // Opponent left mid-round (or never arrived): fall back to the waiting screen.
+                _stage = Stage.Waiting;
+            }
+            else if (_stage == Stage.Waiting)
+            {
+                _stage = Stage.Ready;
+            }
+            await InvokeAsync(StateHasChanged);
+        });
+
+        hub.On<DuelStateUpdate>("OnDuelState", async update =>
+        {
+            _score = update.Score;
+            await InvokeAsync(StateHasChanged);
+        });
+
+        hub.On("OnRoundArmed", async () =>
+        {
+            _stage = Stage.Armed;
+            _lastResult = null;
+            await InvokeAsync(StateHasChanged);
+        });
+
+        hub.On("OnRoundSignal", async () =>
+        {
+            _stage = Stage.Signal;
+            await InvokeAsync(StateHasChanged);
+        });
+
+        hub.On<RoundResultMessage>("OnRoundResult", async result =>
+        {
+            _lastResult = result;
+            _score = result.Score;
+            _stage = Stage.RoundResult;
+            await InvokeAsync(StateHasChanged);
+        });
+
+        hub.On<MatchOverMessage>("OnMatchOver", async result =>
+        {
+            _lastMatchOver = result;
+            _score = result.Score;
+            _stage = Stage.MatchOver;
+            await InvokeAsync(StateHasChanged);
+        });
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_hub is not null)
+        {
+            await _hub.DisposeAsync();
+        }
+    }
+}

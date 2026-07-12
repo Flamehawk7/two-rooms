@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="TwoRooms.Client/TwoRooms.Client.csproj" />
+  <Project Path="TwoRooms/TwoRooms.csproj" />
+</Solution>

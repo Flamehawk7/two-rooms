@@ -1,0 +1,300 @@
+@page "/maze"
+@using Microsoft.AspNetCore.SignalR.Client
+@using TwoRooms.Client.Game
+@implements IAsyncDisposable
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+<PageTitle>Maze Navigator</PageTitle>
+
+<h1>Maze Navigator</h1>
+<p class="text-muted">
+    One of you is the <strong>Guide</strong> &mdash; you can see the whole maze, but not where your
+    partner is. The other is the <strong>Explorer</strong> &mdash; you can see and move around your
+    own position, but not the maze itself. Talk to each other to reach the exit.
+</p>
+
+@if (_stage == Stage.Join)
+{
+    <div class="card p-3" style="max-width: 420px;">
+        <div class="mb-3">
+            <label class="form-label">Your name</label>
+            <input class="form-control" @bind="_playerName" @bind:event="oninput" maxlength="24" />
+        </div>
+        <div class="mb-3">
+            <label class="form-label">Session code</label>
+            <div class="input-group">
+                <input class="form-control" @bind="_sessionCode" @bind:event="oninput" maxlength="8"
+                       placeholder="e.g. FOX7" />
+                <button class="btn btn-outline-secondary" type="button" @onclick="GenerateCode">New Code</button>
+            </div>
+            <div class="form-text">Share this code with your opponent so they can join the same session.</div>
+        </div>
+        @if (_joinError is not null)
+        {
+            <div class="alert alert-danger py-2">@_joinError</div>
+        }
+        <button class="btn btn-primary" disabled="@_connecting" @onclick="JoinAsync">
+            @(_connecting ? "Connecting..." : "Join Session")
+        </button>
+    </div>
+}
+else
+{
+    <div class="mb-3">
+        <strong>Session:</strong> @_sessionCode &nbsp;|&nbsp;
+        <strong>You are the:</strong> @(_mySeat == SessionSeat.A ? "Guide (sees the map)" : "Explorer (moves)")
+        <button class="btn btn-sm btn-outline-secondary ms-3" @onclick="LeaveAsync">Leave</button>
+    </div>
+
+    <div class="mb-3">
+        @foreach (var p in _players)
+        {
+            <span class="badge @(p.IsConnected ? "bg-success" : "bg-secondary") me-2">
+                @p.Name (@(p.Seat == SessionSeat.A ? "Guide" : "Explorer")) @(p.IsConnected ? "" : "- disconnected")
+            </span>
+        }
+    </div>
+
+    @if (!_bothConnected)
+    {
+        <p>Waiting for your partner to join session "@_sessionCode"...</p>
+    }
+
+    @if (_completed is not null)
+    {
+        <div class="alert alert-success">
+            Solved in @FormatMs(_completed.CompletionMs) with @_completed.MoveCount moves and @_completed.BumpCount bumps.
+            @if (_completed.BestCompletionMs is not null)
+            {
+                <text> Best so far: @FormatMs(_completed.BestCompletionMs.Value).</text>
+            }
+        </div>
+    }
+
+    <div class="mb-3">
+        <button class="btn btn-outline-primary" @onclick="NewMazeAsync">
+            @(_completed is null ? "Restart Maze" : "New Maze")
+        </button>
+    </div>
+
+    @if (_mySeat == SessionSeat.A)
+    {
+        @if (_layout is not null)
+        {
+            <div class="maze-grid" style="grid-template-columns: repeat(@_layout.Width, 26px);">
+                @for (var y = 0; y < _layout.Height; y++)
+                {
+                    for (var x = 0; x < _layout.Width; x++)
+                    {
+                        var cell = _layout.Cells[y * _layout.Width + x];
+                        var isStart = x == _layout.StartX && y == _layout.StartY;
+                        var isExit = x == _layout.ExitX && y == _layout.ExitY;
+                        <div class="maze-cell @CellClasses(cell) @(isExit ? "maze-exit" : "") @(isStart ? "maze-start" : "")">
+                            @(isExit ? "X" : isStart ? "S" : "")
+                        </div>
+                    }
+                }
+            </div>
+            <p class="form-text mt-2">S = start, X = exit. You won't see your partner's position &mdash; ask them where they are.</p>
+        }
+    }
+    else
+    {
+        @if (_position is not null)
+        {
+            <div class="explorer-panel" tabindex="0" @onkeydown="HandleKeyDown">
+                <div class="compass">
+                    <button class="compass-btn compass-n" disabled="@(!_position.Surroundings.North)" @onclick='() => MoveAsync(MazeDirection.North)'>&#9650;</button>
+                    <button class="compass-btn compass-w" disabled="@(!_position.Surroundings.West)" @onclick='() => MoveAsync(MazeDirection.West)'>&#9664;</button>
+                    <div class="compass-center">(@_position.X, @_position.Y)</div>
+                    <button class="compass-btn compass-e" disabled="@(!_position.Surroundings.East)" @onclick='() => MoveAsync(MazeDirection.East)'>&#9654;</button>
+                    <button class="compass-btn compass-s" disabled="@(!_position.Surroundings.South)" @onclick='() => MoveAsync(MazeDirection.South)'>&#9660;</button>
+                </div>
+                <p class="form-text mt-2">
+                    Moves: @_position.MoveCount &nbsp;|&nbsp; Bumps: @_position.BumpCount
+                    <br />Arrow keys / WASD also work. Describe your surroundings to the Guide!
+                </p>
+            </div>
+        }
+    }
+}
+
+@code {
+    private enum Stage { Join, Playing }
+
+    private Stage _stage = Stage.Join;
+    private HubConnection? _hub;
+
+    private string _playerName = "";
+    private string _sessionCode = "";
+    private string? _joinError;
+    private bool _connecting;
+
+    private SessionSeat _mySeat;
+    private IReadOnlyList<PlayerInfo> _players = [];
+    private bool _bothConnected;
+
+    private MazeLayoutUpdate? _layout;
+    private MazePositionUpdate? _position;
+    private MazeCompletedMessage? _completed;
+
+    private void GenerateCode()
+    {
+        const string alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        Span<char> chars = stackalloc char[4];
+        for (var i = 0; i < chars.Length; i++)
+        {
+            chars[i] = alphabet[Random.Shared.Next(alphabet.Length)];
+        }
+        _sessionCode = new string(chars);
+    }
+
+    private async Task<string> GetOrCreatePlayerTokenAsync()
+    {
+        var token = await JS.InvokeAsync<string?>("sessionStorage.getItem", "tworooms.playerToken");
+        if (string.IsNullOrEmpty(token))
+        {
+            token = Guid.NewGuid().ToString("N");
+            await JS.InvokeVoidAsync("sessionStorage.setItem", "tworooms.playerToken", token);
+        }
+        return token;
+    }
+
+    private async Task JoinAsync()
+    {
+        _joinError = null;
+        if (string.IsNullOrWhiteSpace(_playerName) || string.IsNullOrWhiteSpace(_sessionCode))
+        {
+            _joinError = "Enter a name and a session code.";
+            return;
+        }
+
+        _connecting = true;
+        try
+        {
+            var hub = new HubConnectionBuilder()
+                .WithUrl(Navigation.ToAbsoluteUri(GameConstants.HubPath))
+                .WithAutomaticReconnect()
+                .Build();
+
+            RegisterHandlers(hub);
+            await hub.StartAsync();
+
+            var token = await GetOrCreatePlayerTokenAsync();
+            var result = await hub.InvokeAsync<JoinSessionResult>("JoinSession", _sessionCode, _playerName, token);
+            if (!result.Success)
+            {
+                _joinError = result.Error;
+                await hub.DisposeAsync();
+                return;
+            }
+
+            _hub = hub;
+            _mySeat = result.Seat;
+            _sessionCode = result.SessionCode;
+            _stage = Stage.Playing;
+        }
+        catch (Exception ex)
+        {
+            _joinError = $"Could not connect: {ex.Message}";
+        }
+        finally
+        {
+            _connecting = false;
+        }
+    }
+
+    private async Task LeaveAsync()
+    {
+        if (_hub is not null)
+        {
+            await _hub.DisposeAsync();
+            _hub = null;
+        }
+        _stage = Stage.Join;
+        _players = [];
+        _layout = null;
+        _position = null;
+        _completed = null;
+        _joinError = null;
+    }
+
+    private async Task MoveAsync(MazeDirection direction)
+    {
+        if (_hub is null || _mySeat != SessionSeat.B) return;
+        await _hub.SendAsync("MazeMove", _sessionCode, direction);
+    }
+
+    private async Task NewMazeAsync()
+    {
+        if (_hub is null) return;
+        await _hub.SendAsync("NewMaze", _sessionCode);
+    }
+
+    private async Task HandleKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
+    {
+        var direction = e.Key switch
+        {
+            "ArrowUp" or "w" or "W" => MazeDirection.North,
+            "ArrowRight" or "d" or "D" => MazeDirection.East,
+            "ArrowDown" or "s" or "S" => MazeDirection.South,
+            "ArrowLeft" or "a" or "A" => MazeDirection.West,
+            _ => (MazeDirection?)null
+        };
+        if (direction is not null)
+        {
+            await MoveAsync(direction.Value);
+        }
+    }
+
+    private static string CellClasses(MazeCellDto c)
+    {
+        var classes = new List<string>();
+        if (!c.North) classes.Add("wall-n");
+        if (!c.East) classes.Add("wall-e");
+        if (!c.South) classes.Add("wall-s");
+        if (!c.West) classes.Add("wall-w");
+        return string.Join(" ", classes);
+    }
+
+    private static string FormatMs(long ms) => $"{ms / 1000.0:0.0}s";
+
+    private void RegisterHandlers(HubConnection hub)
+    {
+        hub.On<SessionStateUpdate>("OnSessionState", async update =>
+        {
+            _players = update.Players;
+            _bothConnected = update.BothConnected;
+            await InvokeAsync(StateHasChanged);
+        });
+
+        hub.On<MazeLayoutUpdate>("OnMazeLayout", async update =>
+        {
+            _layout = update;
+            if (!update.Solved) _completed = null;
+            await InvokeAsync(StateHasChanged);
+        });
+
+        hub.On<MazePositionUpdate>("OnMazePosition", async update =>
+        {
+            _position = update;
+            if (!update.Solved) _completed = null;
+            await InvokeAsync(StateHasChanged);
+        });
+
+        hub.On<MazeCompletedMessage>("OnMazeCompleted", async result =>
+        {
+            _completed = result;
+            await InvokeAsync(StateHasChanged);
+        });
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_hub is not null)
+        {
+            await _hub.DisposeAsync();
+        }
+    }
+}
