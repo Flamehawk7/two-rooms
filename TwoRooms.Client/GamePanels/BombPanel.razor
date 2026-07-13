@@ -122,7 +122,21 @@ else
             }
         }));
 
-        _ = Hub.SendAsync("RequestBombState", SessionCode);
+        // Explicitly pull current state on mount, retrying briefly: a server-side push (e.g. from
+        // a campaign stage activating just before this panel exists) can otherwise arrive before
+        // this component finishes mounting and registering its handlers, and be silently missed
+        // (no handler yet == the message is just dropped). One request isn't reliably enough of a
+        // do-over if that request itself loses the same race, so keep asking until data shows up.
+        _ = RequestStateWithRetry();
+    }
+
+    private async Task RequestStateWithRetry()
+    {
+        for (var attempt = 0; attempt < 5 && _wireView is null && _manualView is null; attempt++)
+        {
+            await Hub.SendAsync("RequestBombState", SessionCode);
+            await Task.Delay(400);
+        }
     }
 
     private async Task CutWireAsync(int position)
