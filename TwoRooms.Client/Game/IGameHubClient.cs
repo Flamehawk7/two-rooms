@@ -26,5 +26,6 @@ public interface IGameHubClient
     Task OnRoomArrangement(RoomArrangementUpdate update);
     Task OnRoomCheckResult(RoomCheckResultMessage result);
     Task OnRoomCompleted(RoomCompletedMessage result);
+    Task OnCampaignState(CampaignStateUpdate update);
     Task OnError(string message);
 }

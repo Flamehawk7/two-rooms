@@ -16,6 +16,7 @@ builder.Services.AddSingleton<MazeService>();
 builder.Services.AddSingleton<SymbolLockService>();
 builder.Services.AddSingleton<BombService>();
 builder.Services.AddSingleton<RoomService>();
+builder.Services.AddSingleton<CampaignService>();
 
 var app = builder.Build();
 

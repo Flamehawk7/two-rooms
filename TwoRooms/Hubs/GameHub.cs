@@ -10,7 +10,7 @@ namespace TwoRooms.Hubs;
 /// <see cref="ReactionDuelService"/>), not here, so a second game can plug into the same session
 /// shell without this class growing without bound.
 /// </summary>
-public class GameHub(SessionManager sessions, ReactionDuelService reactionDuel, MazeService maze, SymbolLockService symbolLock, BombService bomb, RoomService room) : Hub<IGameHubClient>
+public class GameHub(SessionManager sessions, ReactionDuelService reactionDuel, MazeService maze, SymbolLockService symbolLock, BombService bomb, RoomService room, CampaignService campaign) : Hub<IGameHubClient>
 {
     private const string SessionCodeItemKey = "sessionCode";
 
@@ -50,6 +50,7 @@ public class GameHub(SessionManager sessions, ReactionDuelService reactionDuel, 
         await symbolLock.SendStateToSeat(session, seat.Value);
         await bomb.SendStateToSeat(session, seat.Value);
         await room.SendStateToSeat(session, seat.Value);
+        await campaign.SendCurrentState(session);
 
         return new JoinSessionResult(true, null, seat.Value, code);
     }
@@ -215,6 +216,20 @@ public class GameHub(SessionManager sessions, ReactionDuelService reactionDuel, 
         var session = sessions.TryGet(NormalizeCode(sessionCode));
         if (session is null) return;
         await room.NewRoom(session);
+    }
+
+    public async Task StartCampaign(string sessionCode)
+    {
+        var session = sessions.TryGet(NormalizeCode(sessionCode));
+        if (session is null) return;
+        await campaign.StartCampaign(session);
+    }
+
+    public async Task AdvanceCampaign(string sessionCode)
+    {
+        var session = sessions.TryGet(NormalizeCode(sessionCode));
+        if (session is null) return;
+        await campaign.AdvanceCampaign(session);
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)
