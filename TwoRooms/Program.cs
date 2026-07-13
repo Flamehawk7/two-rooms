@@ -15,6 +15,7 @@ builder.Services.AddSingleton<ReactionDuelService>();
 builder.Services.AddSingleton<MazeService>();
 builder.Services.AddSingleton<SymbolLockService>();
 builder.Services.AddSingleton<BombService>();
+builder.Services.AddSingleton<RoomService>();
 
 var app = builder.Build();
 

@@ -10,7 +10,7 @@ namespace TwoRooms.Hubs;
 /// <see cref="ReactionDuelService"/>), not here, so a second game can plug into the same session
 /// shell without this class growing without bound.
 /// </summary>
-public class GameHub(SessionManager sessions, ReactionDuelService reactionDuel, MazeService maze, SymbolLockService symbolLock, BombService bomb) : Hub<IGameHubClient>
+public class GameHub(SessionManager sessions, ReactionDuelService reactionDuel, MazeService maze, SymbolLockService symbolLock, BombService bomb, RoomService room) : Hub<IGameHubClient>
 {
     private const string SessionCodeItemKey = "sessionCode";
 
@@ -49,6 +49,7 @@ public class GameHub(SessionManager sessions, ReactionDuelService reactionDuel, 
         await maze.SendStateToSeat(session, seat.Value);
         await symbolLock.SendStateToSeat(session, seat.Value);
         await bomb.SendStateToSeat(session, seat.Value);
+        await room.SendStateToSeat(session, seat.Value);
 
         return new JoinSessionResult(true, null, seat.Value, code);
     }
@@ -163,6 +164,57 @@ public class GameHub(SessionManager sessions, ReactionDuelService reactionDuel, 
         var session = sessions.TryGet(NormalizeCode(sessionCode));
         if (session is null) return;
         await bomb.NewBomb(session);
+    }
+
+    public async Task RequestRoomState(string sessionCode)
+    {
+        var session = sessions.TryGet(NormalizeCode(sessionCode));
+        if (session is null) return;
+
+        var seat = session.SeatOf(Context.ConnectionId);
+        if (seat is null) return;
+
+        await room.SendStateToSeat(session, seat.Value);
+    }
+
+    public async Task PlaceRoomObject(string sessionCode, RoomShape shape, RoomColor color, int row, int col)
+    {
+        var session = sessions.TryGet(NormalizeCode(sessionCode));
+        if (session is null) return;
+
+        var seat = session.SeatOf(Context.ConnectionId);
+        if (seat is null) return;
+
+        await room.PlaceObject(session, seat.Value, shape, color, row, col);
+    }
+
+    public async Task RemoveRoomObject(string sessionCode, int row, int col)
+    {
+        var session = sessions.TryGet(NormalizeCode(sessionCode));
+        if (session is null) return;
+
+        var seat = session.SeatOf(Context.ConnectionId);
+        if (seat is null) return;
+
+        await room.RemoveObject(session, seat.Value, row, col);
+    }
+
+    public async Task CheckRoomArrangement(string sessionCode)
+    {
+        var session = sessions.TryGet(NormalizeCode(sessionCode));
+        if (session is null) return;
+
+        var seat = session.SeatOf(Context.ConnectionId);
+        if (seat is null) return;
+
+        await room.CheckArrangement(session, seat.Value);
+    }
+
+    public async Task NewRoom(string sessionCode)
+    {
+        var session = sessions.TryGet(NormalizeCode(sessionCode));
+        if (session is null) return;
+        await room.NewRoom(session);
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)

@@ -22,5 +22,9 @@ public interface IGameHubClient
     Task OnBombWires(WireDiagramUpdate update);
     Task OnBombManual(ManualUpdate update);
     Task OnBombResult(BombResultMessage result);
+    Task OnRoomLayout(RoomLayoutUpdate update);
+    Task OnRoomArrangement(RoomArrangementUpdate update);
+    Task OnRoomCheckResult(RoomCheckResultMessage result);
+    Task OnRoomCompleted(RoomCompletedMessage result);
     Task OnError(string message);
 }
