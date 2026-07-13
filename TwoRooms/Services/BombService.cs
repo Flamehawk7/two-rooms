@@ -57,7 +57,7 @@ public sealed class BombService(IHubContext<GameHub, IGameHubClient> hubContext)
 
     public async Task CutWire(Session session, SessionSeat seat, int position)
     {
-        if (seat != SessionSeat.B) return; // only the Manual Holder cuts
+        if (seat != SessionSeat.A) return; // only the Wire Viewer can physically reach the wires
 
         var state = GetOrCreate(session);
         BombResultMessage? result = null;

@@ -19,28 +19,16 @@
     justify-content: center;
     width: 56px;
     height: 56px;
+    border: none;
     border-radius: 0.375rem;
     color: white;
     font-weight: 700;
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
-}
-
-.wire-button {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 56px;
-    height: 56px;
-    border-radius: 0.375rem;
-    border: 1px solid #ced4da;
-    background-color: #fff;
-    font-weight: 700;
-    font-size: 1.1rem;
     cursor: pointer;
 }
 
-.wire-button:disabled {
-    opacity: 0.4;
+.wire-tile:disabled {
+    opacity: 0.5;
     cursor: not-allowed;
 }
 

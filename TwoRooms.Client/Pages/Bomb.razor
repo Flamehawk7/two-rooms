@@ -9,9 +9,10 @@
 <a href="" class="back-link">&lsaquo; Menu</a>
 <h1>Bomb Defusal</h1>
 <p class="text-muted">
-    One of you is the <strong>Wire Viewer</strong> &mdash; you see the wires, but not the manual.
-    The other is the <strong>Manual Holder</strong> &mdash; you have the rules, but not the wires.
-    Work out which wire to cut together before the timer runs out. Cut the wrong one and it's over.
+    One of you is the <strong>Wire Viewer</strong> &mdash; you see the wires and do the cutting, but
+    you don't have the manual. The other is the <strong>Manual Holder</strong> &mdash; you have the
+    rules, but can't see or touch the wires. Describe what you see, work out which wire it is
+    together, before the timer runs out. Cut the wrong one and it's over.
 </p>
 
 @if (_stage == Stage.Join)
@@ -43,7 +44,7 @@ else
 {
     <div class="mb-3">
         <strong>Session:</strong> @_sessionCode &nbsp;|&nbsp;
-        <strong>You are the:</strong> @(_mySeat == SessionSeat.A ? "Wire Viewer (sees the wires)" : "Manual Holder (has the rules)")
+        <strong>You are the:</strong> @(_mySeat == SessionSeat.A ? "Wire Viewer (sees the wires, cuts)" : "Manual Holder (reads the rules)")
         <button class="btn btn-sm btn-outline-secondary ms-3" @onclick="LeaveAsync">Leave</button>
     </div>
 
@@ -96,16 +97,17 @@ else
     {
         @if (_wireView is not null)
         {
+            <p class="form-text">Describe these wires (color, position) to the Manual Holder, then click the one they tell you to cut.</p>
             <div class="wire-row">
                 @for (var i = 0; i < _wireView.WireColors.Count; i++)
                 {
                     var idx = i;
-                    <div class="wire-tile" style="background-color:@ColorHex(_wireView.WireColors[idx]);">
+                    <button class="wire-tile" disabled="@IsResolved" style="background-color:@ColorHex(_wireView.WireColors[idx]);"
+                            @onclick="() => CutWireAsync(idx)">
                         @(idx + 1)
-                    </div>
+                    </button>
                 }
             </div>
-            <p class="form-text mt-2">Describe these wires (color, position) to the Manual Holder.</p>
         }
     }
     else
@@ -118,14 +120,7 @@ else
                     <li>If there are @rule.Count @rule.Color.ToString().ToLowerInvariant() wire(s), cut the @Ordinal(rule.Ordinal) @rule.Color.ToString().ToLowerInvariant() wire.</li>
                 }
             </ol>
-
-            <div class="wire-row">
-                @for (var i = 0; i < BombWireCount; i++)
-                {
-                    var idx = i;
-                    <button class="wire-button" disabled="@IsResolved" @onclick="() => CutWireAsync(idx)">@(idx + 1)</button>
-                }
-            </div>
+            <p class="form-text">You can't see the wires &mdash; tell the Wire Viewer which one to cut based on what they describe.</p>
         }
     }
 }
@@ -152,7 +147,7 @@ else
     private BombResultMessage? _result;
     private DateTime? _deadlineUtc;
 
-    private bool IsResolved => _mySeat == SessionSeat.A ? (_wireView?.Resolved ?? false) : (_manualView?.Resolved ?? false);
+    private bool IsResolved => _result is not null || (_mySeat == SessionSeat.A ? (_wireView?.Resolved ?? false) : (_manualView?.Resolved ?? false));
     private int RemainingSeconds => _deadlineUtc is null ? 0 : Math.Max(0, (int)Math.Ceiling((_deadlineUtc.Value - DateTime.UtcNow).TotalSeconds));
 
     private void GenerateCode()
@@ -235,7 +230,7 @@ else
 
     private async Task CutWireAsync(int position)
     {
-        if (_hub is null || _mySeat != SessionSeat.B || IsResolved) return;
+        if (_hub is null || _mySeat != SessionSeat.A || IsResolved) return;
         await _hub.SendAsync("CutWire", _sessionCode, position);
     }
 
@@ -285,7 +280,11 @@ else
         {
             _wireView = update;
             _deadlineUtc = DateTimeOffset.FromUnixTimeMilliseconds(update.StartedAtUnixMs).UtcDateTime.AddMilliseconds(update.DurationMs);
-            if (!update.Resolved) _result = null;
+            if (!update.Resolved)
+            {
+                _result = null;
+                _countdownTimer?.Start();
+            }
             await InvokeAsync(StateHasChanged);
         });
 
@@ -293,13 +292,18 @@ else
         {
             _manualView = update;
             _deadlineUtc = DateTimeOffset.FromUnixTimeMilliseconds(update.StartedAtUnixMs).UtcDateTime.AddMilliseconds(update.DurationMs);
-            if (!update.Resolved) _result = null;
+            if (!update.Resolved)
+            {
+                _result = null;
+                _countdownTimer?.Start();
+            }
             await InvokeAsync(StateHasChanged);
         });
 
         hub.On<BombResultMessage>("OnBombResult", async result =>
         {
             _result = result;
+            _countdownTimer?.Stop();
             await InvokeAsync(StateHasChanged);
         });
     }
