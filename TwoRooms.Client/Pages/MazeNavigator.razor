@@ -3,7 +3,6 @@
 @using TwoRooms.Client.Game
 @implements IAsyncDisposable
 @inject NavigationManager Navigation
-@inject IJSRuntime JS
 
 <PageTitle>Maze Navigator</PageTitle>
 
@@ -151,16 +150,10 @@ else
         _sessionCode = new string(chars);
     }
 
-    private async Task<string> GetOrCreatePlayerTokenAsync()
-    {
-        var token = await JS.InvokeAsync<string?>("sessionStorage.getItem", "tworooms.playerToken");
-        if (string.IsNullOrEmpty(token))
-        {
-            token = Guid.NewGuid().ToString("N");
-            await JS.InvokeVoidAsync("sessionStorage.setItem", "tworooms.playerToken", token);
-        }
-        return token;
-    }
+    // Generated fresh per page load rather than persisted to browser storage: sessionStorage is
+    // inherited when a tab is opened via "Duplicate", which made two duplicated windows collide
+    // into the same seat. A fresh in-memory token guarantees every window is a distinct player.
+    private static string CreatePlayerToken() => Guid.NewGuid().ToString("N");
 
     private async Task JoinAsync()
     {
@@ -182,7 +175,7 @@ else
             RegisterHandlers(hub);
             await hub.StartAsync();
 
-            var token = await GetOrCreatePlayerTokenAsync();
+            var token = CreatePlayerToken();
             var result = await hub.InvokeAsync<JoinSessionResult>("JoinSession", _sessionCode, _playerName, token);
             if (!result.Success)
             {
