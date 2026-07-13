@@ -19,5 +19,8 @@ public interface IGameHubClient
     Task OnSymbolLockCodex(CodexViewUpdate update);
     Task OnSymbolLockStageResult(SymbolLockStageResultMessage result);
     Task OnSymbolLockCompleted(SymbolLockCompletedMessage result);
+    Task OnBombWires(WireDiagramUpdate update);
+    Task OnBombManual(ManualUpdate update);
+    Task OnBombResult(BombResultMessage result);
     Task OnError(string message);
 }

@@ -1,0 +1,316 @@
+@page "/bomb"
+@using Microsoft.AspNetCore.SignalR.Client
+@using TwoRooms.Client.Game
+@implements IAsyncDisposable
+@inject NavigationManager Navigation
+
+<PageTitle>Bomb Defusal</PageTitle>
+
+<a href="" class="back-link">&lsaquo; Menu</a>
+<h1>Bomb Defusal</h1>
+<p class="text-muted">
+    One of you is the <strong>Wire Viewer</strong> &mdash; you see the wires, but not the manual.
+    The other is the <strong>Manual Holder</strong> &mdash; you have the rules, but not the wires.
+    Work out which wire to cut together before the timer runs out. Cut the wrong one and it's over.
+</p>
+
+@if (_stage == Stage.Join)
+{
+    <div class="card p-3" style="max-width: 420px;">
+        <div class="mb-3">
+            <label class="form-label">Your name</label>
+            <input class="form-control" @bind="_playerName" @bind:event="oninput" maxlength="24" />
+        </div>
+        <div class="mb-3">
+            <label class="form-label">Session code</label>
+            <div class="input-group">
+                <input class="form-control" @bind="_sessionCode" @bind:event="oninput" maxlength="8"
+                       placeholder="e.g. FOX7" />
+                <button class="btn btn-outline-secondary" type="button" @onclick="GenerateCode">New Code</button>
+            </div>
+            <div class="form-text">Share this code with your opponent so they can join the same session.</div>
+        </div>
+        @if (_joinError is not null)
+        {
+            <div class="alert alert-danger py-2">@_joinError</div>
+        }
+        <button class="btn btn-primary" disabled="@_connecting" @onclick="JoinAsync">
+            @(_connecting ? "Connecting..." : "Join Session")
+        </button>
+    </div>
+}
+else
+{
+    <div class="mb-3">
+        <strong>Session:</strong> @_sessionCode &nbsp;|&nbsp;
+        <strong>You are the:</strong> @(_mySeat == SessionSeat.A ? "Wire Viewer (sees the wires)" : "Manual Holder (has the rules)")
+        <button class="btn btn-sm btn-outline-secondary ms-3" @onclick="LeaveAsync">Leave</button>
+    </div>
+
+    <div class="mb-3">
+        @foreach (var p in _players)
+        {
+            <span class="badge @(p.IsConnected ? "bg-success" : "bg-secondary") me-2">
+                @p.Name (@(p.Seat == SessionSeat.A ? "Wire Viewer" : "Manual Holder")) @(p.IsConnected ? "" : "- disconnected")
+            </span>
+        }
+    </div>
+
+    @if (!_bothConnected)
+    {
+        <p>Waiting for your partner to join session "@_sessionCode"...</p>
+    }
+
+    @if (_deadlineUtc is not null && !IsResolved)
+    {
+        <p class="countdown @(RemainingSeconds <= 15 ? "countdown-danger" : "")">@RemainingSeconds s remaining</p>
+    }
+
+    @if (_result is not null)
+    {
+        <div class="alert @(_result.Defused ? "alert-success" : "alert-danger")">
+            @if (_result.Defused)
+            {
+                <text>Defused in @FormatMs(_result.ElapsedMs)!</text>
+                @if (_result.BestCompletionMs is not null)
+                {
+                    <text> Best so far: @FormatMs(_result.BestCompletionMs.Value).</text>
+                }
+            }
+            else if (_result.FailureReason == BombFailureReason.WrongWire)
+            {
+                <text>BOOM! Wire #@(_result.CutWirePosition + 1) was the wrong one.</text>
+            }
+            else
+            {
+                <text>BOOM! Time ran out.</text>
+            }
+        </div>
+    }
+
+    <div class="mb-3">
+        <button class="btn btn-outline-primary" @onclick="NewBombAsync">New Bomb</button>
+    </div>
+
+    @if (_mySeat == SessionSeat.A)
+    {
+        @if (_wireView is not null)
+        {
+            <div class="wire-row">
+                @for (var i = 0; i < _wireView.WireColors.Count; i++)
+                {
+                    var idx = i;
+                    <div class="wire-tile" style="background-color:@ColorHex(_wireView.WireColors[idx]);">
+                        @(idx + 1)
+                    </div>
+                }
+            </div>
+            <p class="form-text mt-2">Describe these wires (color, position) to the Manual Holder.</p>
+        }
+    }
+    else
+    {
+        @if (_manualView is not null)
+        {
+            <ol class="manual-list">
+                @foreach (var rule in _manualView.Rules)
+                {
+                    <li>If there are @rule.Count @rule.Color.ToString().ToLowerInvariant() wire(s), cut the @Ordinal(rule.Ordinal) @rule.Color.ToString().ToLowerInvariant() wire.</li>
+                }
+            </ol>
+
+            <div class="wire-row">
+                @for (var i = 0; i < BombWireCount; i++)
+                {
+                    var idx = i;
+                    <button class="wire-button" disabled="@IsResolved" @onclick="() => CutWireAsync(idx)">@(idx + 1)</button>
+                }
+            </div>
+        }
+    }
+}
+
+@code {
+    private const int BombWireCount = 6;
+    private enum Stage { Join, Playing }
+
+    private Stage _stage = Stage.Join;
+    private HubConnection? _hub;
+    private System.Timers.Timer? _countdownTimer;
+
+    private string _playerName = "";
+    private string _sessionCode = "";
+    private string? _joinError;
+    private bool _connecting;
+
+    private SessionSeat _mySeat;
+    private IReadOnlyList<PlayerInfo> _players = [];
+    private bool _bothConnected;
+
+    private WireDiagramUpdate? _wireView;
+    private ManualUpdate? _manualView;
+    private BombResultMessage? _result;
+    private DateTime? _deadlineUtc;
+
+    private bool IsResolved => _mySeat == SessionSeat.A ? (_wireView?.Resolved ?? false) : (_manualView?.Resolved ?? false);
+    private int RemainingSeconds => _deadlineUtc is null ? 0 : Math.Max(0, (int)Math.Ceiling((_deadlineUtc.Value - DateTime.UtcNow).TotalSeconds));
+
+    private void GenerateCode()
+    {
+        const string alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        Span<char> chars = stackalloc char[4];
+        for (var i = 0; i < chars.Length; i++)
+        {
+            chars[i] = alphabet[Random.Shared.Next(alphabet.Length)];
+        }
+        _sessionCode = new string(chars);
+    }
+
+    // Generated fresh per page load rather than persisted to browser storage: sessionStorage is
+    // inherited when a tab is opened via "Duplicate", which made two duplicated windows collide
+    // into the same seat. A fresh in-memory token guarantees every window is a distinct player.
+    private static string CreatePlayerToken() => Guid.NewGuid().ToString("N");
+
+    private async Task JoinAsync()
+    {
+        _joinError = null;
+        if (string.IsNullOrWhiteSpace(_playerName) || string.IsNullOrWhiteSpace(_sessionCode))
+        {
+            _joinError = "Enter a name and a session code.";
+            return;
+        }
+
+        _connecting = true;
+        try
+        {
+            var hub = new HubConnectionBuilder()
+                .WithUrl(Navigation.ToAbsoluteUri(GameConstants.HubPath))
+                .WithAutomaticReconnect()
+                .Build();
+
+            RegisterHandlers(hub);
+            await hub.StartAsync();
+
+            var token = CreatePlayerToken();
+            var result = await hub.InvokeAsync<JoinSessionResult>("JoinSession", _sessionCode, _playerName, token);
+            if (!result.Success)
+            {
+                _joinError = result.Error;
+                await hub.DisposeAsync();
+                return;
+            }
+
+            _hub = hub;
+            _mySeat = result.Seat;
+            _sessionCode = result.SessionCode;
+            _stage = Stage.Playing;
+            StartCountdownTimer();
+        }
+        catch (Exception ex)
+        {
+            _joinError = $"Could not connect: {ex.Message}";
+        }
+        finally
+        {
+            _connecting = false;
+        }
+    }
+
+    private async Task LeaveAsync()
+    {
+        if (_hub is not null)
+        {
+            await _hub.DisposeAsync();
+            _hub = null;
+        }
+        _countdownTimer?.Stop();
+        _stage = Stage.Join;
+        _players = [];
+        _wireView = null;
+        _manualView = null;
+        _result = null;
+        _deadlineUtc = null;
+        _joinError = null;
+    }
+
+    private async Task CutWireAsync(int position)
+    {
+        if (_hub is null || _mySeat != SessionSeat.B || IsResolved) return;
+        await _hub.SendAsync("CutWire", _sessionCode, position);
+    }
+
+    private async Task NewBombAsync()
+    {
+        if (_hub is null) return;
+        await _hub.SendAsync("NewBomb", _sessionCode);
+    }
+
+    private void StartCountdownTimer()
+    {
+        _countdownTimer = new System.Timers.Timer(1000);
+        _countdownTimer.Elapsed += async (_, _) => await InvokeAsync(StateHasChanged);
+        _countdownTimer.AutoReset = true;
+        _countdownTimer.Start();
+    }
+
+    private static string Ordinal(int n) => n switch
+    {
+        1 => "1st",
+        2 => "2nd",
+        3 => "3rd",
+        _ => $"{n}th"
+    };
+
+    private static string FormatMs(long ms) => $"{ms / 1000.0:0.0}s";
+
+    private static string ColorHex(WireColor color) => color switch
+    {
+        WireColor.Red => "#dc3545",
+        WireColor.Blue => "#0d6efd",
+        WireColor.Yellow => "#ffc107",
+        WireColor.Black => "#212529",
+        _ => "#6c757d"
+    };
+
+    private void RegisterHandlers(HubConnection hub)
+    {
+        hub.On<SessionStateUpdate>("OnSessionState", async update =>
+        {
+            _players = update.Players;
+            _bothConnected = update.BothConnected;
+            await InvokeAsync(StateHasChanged);
+        });
+
+        hub.On<WireDiagramUpdate>("OnBombWires", async update =>
+        {
+            _wireView = update;
+            _deadlineUtc = DateTimeOffset.FromUnixTimeMilliseconds(update.StartedAtUnixMs).UtcDateTime.AddMilliseconds(update.DurationMs);
+            if (!update.Resolved) _result = null;
+            await InvokeAsync(StateHasChanged);
+        });
+
+        hub.On<ManualUpdate>("OnBombManual", async update =>
+        {
+            _manualView = update;
+            _deadlineUtc = DateTimeOffset.FromUnixTimeMilliseconds(update.StartedAtUnixMs).UtcDateTime.AddMilliseconds(update.DurationMs);
+            if (!update.Resolved) _result = null;
+            await InvokeAsync(StateHasChanged);
+        });
+
+        hub.On<BombResultMessage>("OnBombResult", async result =>
+        {
+            _result = result;
+            await InvokeAsync(StateHasChanged);
+        });
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _countdownTimer?.Stop();
+        _countdownTimer?.Dispose();
+        if (_hub is not null)
+        {
+            await _hub.DisposeAsync();
+        }
+    }
+}

@@ -10,7 +10,7 @@ namespace TwoRooms.Hubs;
 /// <see cref="ReactionDuelService"/>), not here, so a second game can plug into the same session
 /// shell without this class growing without bound.
 /// </summary>
-public class GameHub(SessionManager sessions, ReactionDuelService reactionDuel, MazeService maze, SymbolLockService symbolLock) : Hub<IGameHubClient>
+public class GameHub(SessionManager sessions, ReactionDuelService reactionDuel, MazeService maze, SymbolLockService symbolLock, BombService bomb) : Hub<IGameHubClient>
 {
     private const string SessionCodeItemKey = "sessionCode";
 
@@ -48,6 +48,7 @@ public class GameHub(SessionManager sessions, ReactionDuelService reactionDuel, 
         await reactionDuel.SendCurrentState(session);
         await maze.SendStateToSeat(session, seat.Value);
         await symbolLock.SendStateToSeat(session, seat.Value);
+        await bomb.SendStateToSeat(session, seat.Value);
 
         return new JoinSessionResult(true, null, seat.Value, code);
     }
@@ -133,6 +134,35 @@ public class GameHub(SessionManager sessions, ReactionDuelService reactionDuel, 
         var session = sessions.TryGet(NormalizeCode(sessionCode));
         if (session is null) return;
         await symbolLock.NewLock(session, difficulty);
+    }
+
+    public async Task RequestBombState(string sessionCode)
+    {
+        var session = sessions.TryGet(NormalizeCode(sessionCode));
+        if (session is null) return;
+
+        var seat = session.SeatOf(Context.ConnectionId);
+        if (seat is null) return;
+
+        await bomb.SendStateToSeat(session, seat.Value);
+    }
+
+    public async Task CutWire(string sessionCode, int position)
+    {
+        var session = sessions.TryGet(NormalizeCode(sessionCode));
+        if (session is null) return;
+
+        var seat = session.SeatOf(Context.ConnectionId);
+        if (seat is null) return;
+
+        await bomb.CutWire(session, seat.Value, position);
+    }
+
+    public async Task NewBomb(string sessionCode)
+    {
+        var session = sessions.TryGet(NormalizeCode(sessionCode));
+        if (session is null) return;
+        await bomb.NewBomb(session);
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)

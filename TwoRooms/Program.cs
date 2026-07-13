@@ -14,6 +14,7 @@ builder.Services.AddSingleton<SessionManager>();
 builder.Services.AddSingleton<ReactionDuelService>();
 builder.Services.AddSingleton<MazeService>();
 builder.Services.AddSingleton<SymbolLockService>();
+builder.Services.AddSingleton<BombService>();
 
 var app = builder.Build();
 
