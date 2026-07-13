@@ -15,5 +15,9 @@ public interface IGameHubClient
     Task OnMazeLayout(MazeLayoutUpdate update);
     Task OnMazePosition(MazePositionUpdate update);
     Task OnMazeCompleted(MazeCompletedMessage result);
+    Task OnSymbolLockDoor(DoorViewUpdate update);
+    Task OnSymbolLockCodex(CodexViewUpdate update);
+    Task OnSymbolLockStageResult(SymbolLockStageResultMessage result);
+    Task OnSymbolLockCompleted(SymbolLockCompletedMessage result);
     Task OnError(string message);
 }

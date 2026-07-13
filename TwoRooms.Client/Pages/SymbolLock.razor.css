@@ -1,0 +1,25 @@
+.symbol-row {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.symbol-tile {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 56px;
+    height: 56px;
+    font-size: 1.75rem;
+    border: 1px solid #ced4da;
+    border-radius: 0.5rem;
+    background-color: #fff;
+}
+
+.symbol-tile-sm {
+    font-size: 1.25rem;
+    text-align: center;
+}
+
+.codex-table {
+    background-color: #fff;
+}

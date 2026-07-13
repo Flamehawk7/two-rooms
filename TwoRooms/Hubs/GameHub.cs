@@ -10,7 +10,7 @@ namespace TwoRooms.Hubs;
 /// <see cref="ReactionDuelService"/>), not here, so a second game can plug into the same session
 /// shell without this class growing without bound.
 /// </summary>
-public class GameHub(SessionManager sessions, ReactionDuelService reactionDuel, MazeService maze) : Hub<IGameHubClient>
+public class GameHub(SessionManager sessions, ReactionDuelService reactionDuel, MazeService maze, SymbolLockService symbolLock) : Hub<IGameHubClient>
 {
     private const string SessionCodeItemKey = "sessionCode";
 
@@ -47,6 +47,7 @@ public class GameHub(SessionManager sessions, ReactionDuelService reactionDuel, 
         await BroadcastState(session);
         await reactionDuel.SendCurrentState(session);
         await maze.SendStateToSeat(session, seat.Value);
+        await symbolLock.SendStateToSeat(session, seat.Value);
 
         return new JoinSessionResult(true, null, seat.Value, code);
     }
@@ -96,6 +97,42 @@ public class GameHub(SessionManager sessions, ReactionDuelService reactionDuel, 
         var session = sessions.TryGet(NormalizeCode(sessionCode));
         if (session is null) return;
         await maze.NewMaze(session);
+    }
+
+    public async Task RequestSymbolLockState(string sessionCode)
+    {
+        var session = sessions.TryGet(NormalizeCode(sessionCode));
+        if (session is null) return;
+
+        var seat = session.SeatOf(Context.ConnectionId);
+        if (seat is null) return;
+
+        await symbolLock.SendStateToSeat(session, seat.Value);
+    }
+
+    public async Task SubmitSymbolLockCode(string sessionCode, string code)
+    {
+        var session = sessions.TryGet(NormalizeCode(sessionCode));
+        if (session is null) return;
+
+        var seat = session.SeatOf(Context.ConnectionId);
+        if (seat is null) return;
+
+        await symbolLock.SubmitCode(session, seat.Value, code);
+    }
+
+    public async Task AdvanceSymbolLockStage(string sessionCode)
+    {
+        var session = sessions.TryGet(NormalizeCode(sessionCode));
+        if (session is null) return;
+        await symbolLock.AdvanceStage(session);
+    }
+
+    public async Task NewSymbolLock(string sessionCode, LockDifficulty difficulty)
+    {
+        var session = sessions.TryGet(NormalizeCode(sessionCode));
+        if (session is null) return;
+        await symbolLock.NewLock(session, difficulty);
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)
