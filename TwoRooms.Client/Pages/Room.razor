@@ -1,6 +1,7 @@
 @page "/room"
 @using Microsoft.AspNetCore.SignalR.Client
 @using TwoRooms.Client.Game
+@using TwoRooms.Client.GamePanels
 @implements IAsyncDisposable
 @inject NavigationManager Navigation
 
@@ -61,82 +62,9 @@ else
         <p>Waiting for your partner to join session "@_sessionCode"...</p>
     }
 
-    @if (_completed is not null)
+    @if (_hub is not null)
     {
-        <div class="alert alert-success">
-            Matched in @FormatMs(_completed.ElapsedMs) with @_completed.CheckCount check(s).
-            @if (_completed.BestCompletionMs is not null)
-            {
-                <text> Best so far: @FormatMs(_completed.BestCompletionMs.Value).</text>
-            }
-        </div>
-    }
-    else if (_lastCheck is not null)
-    {
-        <div class="alert alert-info">@_lastCheck.CorrectCount / @_lastCheck.TotalCount correct.</div>
-    }
-
-    <div class="mb-3">
-        <button class="btn btn-outline-primary" @onclick="NewRoomAsync">New Room</button>
-    </div>
-
-    @if (_mySeat == SessionSeat.A)
-    {
-        @if (_layout is not null)
-        {
-            <div class="room-grid" style="grid-template-columns: repeat(@_layout.Cols, 64px);">
-                @for (var r = 0; r < _layout.Rows; r++)
-                {
-                    for (var c = 0; c < _layout.Cols; c++)
-                    {
-                        var obj = _layout.Objects.FirstOrDefault(o => o.Row == r && o.Col == c);
-                        <div class="room-cell">
-                            @if (obj is not null)
-                            {
-                                <span class="room-glyph" style="color:@ColorHex(obj.Color);">@Glyph(obj.Shape)</span>
-                            }
-                        </div>
-                    }
-                }
-            </div>
-            <p class="form-text mt-2">Describe these objects (shape, color, position) to the Inside player.</p>
-        }
-    }
-    else
-    {
-        @if (_arrangement is not null)
-        {
-            <p class="form-text">Tray (tap one, then tap a cell to place it; tap a placed object to pick it back up):</p>
-            <div class="room-tray mb-2">
-                @foreach (var obj in _arrangement.Tray)
-                {
-                    var selected = _selected is not null && _selected.Shape == obj.Shape && _selected.Color == obj.Color;
-                    <button class="room-glyph-btn @(selected ? "selected" : "")" style="color:@ColorHex(obj.Color);" @onclick="() => SelectTrayObject(obj)">
-                        @Glyph(obj.Shape)
-                    </button>
-                }
-            </div>
-
-            <div class="room-grid" style="grid-template-columns: repeat(@_arrangement.Cols, 64px);">
-                @for (var r = 0; r < _arrangement.Rows; r++)
-                {
-                    for (var c = 0; c < _arrangement.Cols; c++)
-                    {
-                        var row = r;
-                        var col = c;
-                        var placed = _arrangement.Placed.FirstOrDefault(o => o.Row == row && o.Col == col);
-                        <button class="room-cell room-cell-tap" @onclick="() => CellTapped(row, col)">
-                            @if (placed is not null)
-                            {
-                                <span class="room-glyph" style="color:@ColorHex(placed.Color);">@Glyph(placed.Shape)</span>
-                            }
-                        </button>
-                    }
-                }
-            </div>
-
-            <button class="btn btn-primary mt-2" @onclick="CheckAsync">Check Arrangement</button>
-        }
+        <RoomPanel Hub="_hub" SessionCode="_sessionCode" MySeat="_mySeat" />
     }
 }
 
@@ -154,12 +82,6 @@ else
     private SessionSeat _mySeat;
     private IReadOnlyList<PlayerInfo> _players = [];
     private bool _bothConnected;
-
-    private RoomLayoutUpdate? _layout;
-    private RoomArrangementUpdate? _arrangement;
-    private RoomCheckResultMessage? _lastCheck;
-    private RoomCompletedMessage? _completed;
-    private RoomObjectDto? _selected;
 
     private void GenerateCode()
     {
@@ -230,67 +152,8 @@ else
         }
         _stage = Stage.Join;
         _players = [];
-        _layout = null;
-        _arrangement = null;
-        _lastCheck = null;
-        _completed = null;
-        _selected = null;
         _joinError = null;
     }
-
-    private void SelectTrayObject(RoomObjectDto obj)
-    {
-        _selected = _selected is not null && _selected.Shape == obj.Shape && _selected.Color == obj.Color ? null : obj;
-    }
-
-    private async Task CellTapped(int row, int col)
-    {
-        if (_hub is null || _mySeat != SessionSeat.B || _arrangement is null) return;
-
-        var existing = _arrangement.Placed.FirstOrDefault(o => o.Row == row && o.Col == col);
-        if (existing is not null)
-        {
-            await _hub.SendAsync("RemoveRoomObject", _sessionCode, row, col);
-            return;
-        }
-
-        if (_selected is null) return;
-        await _hub.SendAsync("PlaceRoomObject", _sessionCode, _selected.Shape, _selected.Color, row, col);
-        _selected = null;
-    }
-
-    private async Task CheckAsync()
-    {
-        if (_hub is null) return;
-        await _hub.SendAsync("CheckRoomArrangement", _sessionCode);
-    }
-
-    private async Task NewRoomAsync()
-    {
-        if (_hub is null) return;
-        _selected = null;
-        await _hub.SendAsync("NewRoom", _sessionCode);
-    }
-
-    private static string Glyph(RoomShape shape) => shape switch
-    {
-        RoomShape.Circle => "●",
-        RoomShape.Square => "■",
-        RoomShape.Triangle => "▲",
-        RoomShape.Star => "★",
-        _ => "?"
-    };
-
-    private static string ColorHex(RoomColor color) => color switch
-    {
-        RoomColor.Red => "#dc3545",
-        RoomColor.Blue => "#0d6efd",
-        RoomColor.Yellow => "#ffc107",
-        RoomColor.Green => "#198754",
-        _ => "#6c757d"
-    };
-
-    private static string FormatMs(long ms) => $"{ms / 1000.0:0.0}s";
 
     private void RegisterHandlers(HubConnection hub)
     {
@@ -298,32 +161,6 @@ else
         {
             _players = update.Players;
             _bothConnected = update.BothConnected;
-            await InvokeAsync(StateHasChanged);
-        });
-
-        hub.On<RoomLayoutUpdate>("OnRoomLayout", async update =>
-        {
-            _layout = update;
-            if (!update.Solved) _completed = null;
-            await InvokeAsync(StateHasChanged);
-        });
-
-        hub.On<RoomArrangementUpdate>("OnRoomArrangement", async update =>
-        {
-            _arrangement = update;
-            if (!update.Solved) _completed = null;
-            await InvokeAsync(StateHasChanged);
-        });
-
-        hub.On<RoomCheckResultMessage>("OnRoomCheckResult", async result =>
-        {
-            _lastCheck = result;
-            await InvokeAsync(StateHasChanged);
-        });
-
-        hub.On<RoomCompletedMessage>("OnRoomCompleted", async result =>
-        {
-            _completed = result;
             await InvokeAsync(StateHasChanged);
         });
     }

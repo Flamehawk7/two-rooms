@@ -1,0 +1,164 @@
+@using Microsoft.AspNetCore.SignalR.Client
+@using TwoRooms.Client.Game
+@implements IDisposable
+
+@if (_deadlineUtc is not null && !IsResolved)
+{
+    <p class="countdown @(RemainingSeconds <= 15 ? "countdown-danger" : "")">@RemainingSeconds s remaining</p>
+}
+
+@if (_result is not null)
+{
+    <div class="alert @(_result.Defused ? "alert-success" : "alert-danger")">
+        @if (_result.Defused)
+        {
+            <text>Defused in @FormatMs(_result.ElapsedMs)!</text>
+            @if (_result.BestCompletionMs is not null)
+            {
+                <text> Best so far: @FormatMs(_result.BestCompletionMs.Value).</text>
+            }
+        }
+        else if (_result.FailureReason == BombFailureReason.WrongWire)
+        {
+            <text>BOOM! Wire #@(_result.CutWirePosition + 1) was the wrong one.</text>
+        }
+        else
+        {
+            <text>BOOM! Time ran out.</text>
+        }
+    </div>
+}
+
+<div class="mb-3">
+    <button class="btn btn-outline-primary" @onclick="NewBombAsync">New Bomb</button>
+</div>
+
+@if (MySeat == SessionSeat.A)
+{
+    @if (_wireView is not null)
+    {
+        <p class="form-text">Describe these wires (color, position) to the Manual Holder, then click the one they tell you to cut.</p>
+        <div class="wire-row">
+            @for (var i = 0; i < _wireView.WireColors.Count; i++)
+            {
+                var idx = i;
+                <button class="wire-tile" disabled="@IsResolved" style="background-color:@ColorHex(_wireView.WireColors[idx]);"
+                        @onclick="() => CutWireAsync(idx)">
+                    @(idx + 1)
+                </button>
+            }
+        </div>
+    }
+}
+else
+{
+    @if (_manualView is not null)
+    {
+        <ol class="manual-list">
+            @foreach (var rule in _manualView.Rules)
+            {
+                <li>If there are @rule.Count @rule.Color.ToString().ToLowerInvariant() wire(s), cut the @Ordinal(rule.Ordinal) @rule.Color.ToString().ToLowerInvariant() wire.</li>
+            }
+        </ol>
+        <p class="form-text">You can't see the wires &mdash; tell the Wire Viewer which one to cut based on what they describe.</p>
+    }
+}
+
+@code {
+    [Parameter, EditorRequired] public HubConnection Hub { get; set; } = null!;
+    [Parameter, EditorRequired] public string SessionCode { get; set; } = "";
+    [Parameter, EditorRequired] public SessionSeat MySeat { get; set; }
+    [Parameter] public EventCallback OnSolved { get; set; }
+
+    private WireDiagramUpdate? _wireView;
+    private ManualUpdate? _manualView;
+    private BombResultMessage? _result;
+    private DateTime? _deadlineUtc;
+    private System.Timers.Timer? _countdownTimer;
+    private readonly List<IDisposable> _subscriptions = [];
+
+    private bool IsResolved => _result is not null || (MySeat == SessionSeat.A ? (_wireView?.Resolved ?? false) : (_manualView?.Resolved ?? false));
+    private int RemainingSeconds => _deadlineUtc is null ? 0 : Math.Max(0, (int)Math.Ceiling((_deadlineUtc.Value - DateTime.UtcNow).TotalSeconds));
+
+    protected override void OnInitialized()
+    {
+        _countdownTimer = new System.Timers.Timer(1000);
+        _countdownTimer.Elapsed += async (_, _) => await InvokeAsync(StateHasChanged);
+        _countdownTimer.AutoReset = true;
+        _countdownTimer.Start();
+
+        _subscriptions.Add(Hub.On<WireDiagramUpdate>("OnBombWires", async update =>
+        {
+            _wireView = update;
+            _deadlineUtc = DateTimeOffset.FromUnixTimeMilliseconds(update.StartedAtUnixMs).UtcDateTime.AddMilliseconds(update.DurationMs);
+            if (!update.Resolved)
+            {
+                _result = null;
+                _countdownTimer?.Start();
+            }
+            await InvokeAsync(StateHasChanged);
+        }));
+
+        _subscriptions.Add(Hub.On<ManualUpdate>("OnBombManual", async update =>
+        {
+            _manualView = update;
+            _deadlineUtc = DateTimeOffset.FromUnixTimeMilliseconds(update.StartedAtUnixMs).UtcDateTime.AddMilliseconds(update.DurationMs);
+            if (!update.Resolved)
+            {
+                _result = null;
+                _countdownTimer?.Start();
+            }
+            await InvokeAsync(StateHasChanged);
+        }));
+
+        _subscriptions.Add(Hub.On<BombResultMessage>("OnBombResult", async result =>
+        {
+            _result = result;
+            _countdownTimer?.Stop();
+            await InvokeAsync(StateHasChanged);
+            if (result.Defused)
+            {
+                await OnSolved.InvokeAsync();
+            }
+        }));
+
+        _ = Hub.SendAsync("RequestBombState", SessionCode);
+    }
+
+    private async Task CutWireAsync(int position)
+    {
+        if (MySeat != SessionSeat.A || IsResolved) return;
+        await Hub.SendAsync("CutWire", SessionCode, position);
+    }
+
+    private async Task NewBombAsync()
+    {
+        await Hub.SendAsync("NewBomb", SessionCode);
+    }
+
+    private static string Ordinal(int n) => n switch
+    {
+        1 => "1st",
+        2 => "2nd",
+        3 => "3rd",
+        _ => $"{n}th"
+    };
+
+    private static string FormatMs(long ms) => $"{ms / 1000.0:0.0}s";
+
+    private static string ColorHex(WireColor color) => color switch
+    {
+        WireColor.Red => "#dc3545",
+        WireColor.Blue => "#0d6efd",
+        WireColor.Yellow => "#ffc107",
+        WireColor.Black => "#212529",
+        _ => "#6c757d"
+    };
+
+    public void Dispose()
+    {
+        _countdownTimer?.Stop();
+        _countdownTimer?.Dispose();
+        foreach (var sub in _subscriptions) sub.Dispose();
+    }
+}

@@ -1,0 +1,289 @@
+@page "/campaign"
+@using Microsoft.AspNetCore.SignalR.Client
+@using TwoRooms.Client.Game
+@using TwoRooms.Client.GamePanels
+@implements IAsyncDisposable
+@inject NavigationManager Navigation
+
+<PageTitle>Multi-Room Campaign</PageTitle>
+
+<a href="" class="back-link">&lsaquo; Menu</a>
+<h1>Multi-Room Campaign</h1>
+<p class="text-muted">
+    All four rooms, back to back, in a random order &mdash; Maze Navigator, Symbol Lock, Bomb
+    Defusal, and Room Description. One global timer for the whole run. A failed bomb just means a
+    new bomb for that stage; everything else you can simply keep trying until you get it.
+</p>
+
+@if (_stage == Stage.Join)
+{
+    <div class="card p-3" style="max-width: 420px;">
+        <div class="mb-3">
+            <label class="form-label">Your name</label>
+            <input class="form-control" @bind="_playerName" @bind:event="oninput" maxlength="24" />
+        </div>
+        <div class="mb-3">
+            <label class="form-label">Session code</label>
+            <div class="input-group">
+                <input class="form-control" @bind="_sessionCode" @bind:event="oninput" maxlength="8"
+                       placeholder="e.g. FOX7" />
+                <button class="btn btn-outline-secondary" type="button" @onclick="GenerateCode">New Code</button>
+            </div>
+            <div class="form-text">Share this code with your opponent so they can join the same session.</div>
+        </div>
+        @if (_joinError is not null)
+        {
+            <div class="alert alert-danger py-2">@_joinError</div>
+        }
+        <button class="btn btn-primary" disabled="@_connecting" @onclick="JoinAsync">
+            @(_connecting ? "Connecting..." : "Join Session")
+        </button>
+    </div>
+}
+else
+{
+    <div class="mb-3">
+        <strong>Session:</strong> @_sessionCode
+        <button class="btn btn-sm btn-outline-secondary ms-3" @onclick="LeaveAsync">Leave</button>
+    </div>
+
+    <div class="mb-3">
+        @foreach (var p in _players)
+        {
+            <span class="badge @(p.IsConnected ? "bg-success" : "bg-secondary") me-2">
+                @p.Name @(p.IsConnected ? "" : "- disconnected")
+            </span>
+        }
+    </div>
+
+    @if (!_bothConnected)
+    {
+        <p>Waiting for your partner to join session "@_sessionCode"...</p>
+    }
+    else if (_campaignState is null || !_campaignState.Started)
+    {
+        <button class="btn btn-primary" @onclick="StartAsync">Start Campaign</button>
+    }
+    else if (_campaignState.Completed)
+    {
+        <div class="alert alert-success">
+            <h4 class="alert-heading">Campaign complete!</h4>
+            Finished in @FormatElapsed(_campaignState.CompletedElapsedMs ?? 0).
+            @if (_campaignState.BestCompletionMs is not null)
+            {
+                <text> Best so far: @FormatElapsed(_campaignState.BestCompletionMs.Value).</text>
+            }
+        </div>
+        <button class="btn btn-primary" @onclick="StartAsync">Start New Campaign</button>
+    }
+    else
+    {
+        var currentKind = _campaignState.StageOrder[_campaignState.CurrentStageIndex];
+        var isLastStage = _campaignState.CurrentStageIndex + 1 == _campaignState.StageOrder.Count;
+
+        <div class="mb-3">
+            <h4>Stage @(_campaignState.CurrentStageIndex + 1) of @_campaignState.StageOrder.Count: @GameLabel(currentKind)</h4>
+            <p class="countdown">@FormatElapsed(ElapsedMs)</p>
+        </div>
+
+        @if (_stageSolved)
+        {
+            <div class="alert alert-success">
+                Stage complete!
+                <button class="btn btn-sm btn-success ms-2" @onclick="AdvanceAsync">
+                    @(isLastStage ? "Finish Campaign" : "Continue to Next Stage")
+                </button>
+            </div>
+        }
+
+        @if (_hub is not null)
+        {
+            @switch (currentKind)
+            {
+                case CampaignGameKind.Maze:
+                    <MazePanel Hub="_hub" SessionCode="_sessionCode" MySeat="_mySeat" ShowNewMazeButton="false" OnSolved="HandleStageSolved" />
+                    break;
+                case CampaignGameKind.SymbolLock:
+                    <SymbolLockPanel Hub="_hub" SessionCode="_sessionCode" MySeat="_mySeat" ShowNewLockControls="false" OnSolved="HandleStageSolved" />
+                    break;
+                case CampaignGameKind.Bomb:
+                    <BombPanel Hub="_hub" SessionCode="_sessionCode" MySeat="_mySeat" OnSolved="HandleStageSolved" />
+                    break;
+                case CampaignGameKind.Room:
+                    <RoomPanel Hub="_hub" SessionCode="_sessionCode" MySeat="_mySeat" ShowNewRoomButton="false" OnSolved="HandleStageSolved" />
+                    break;
+            }
+        }
+    }
+}
+
+@code {
+    private enum Stage { Join, Playing }
+
+    private Stage _stage = Stage.Join;
+    private HubConnection? _hub;
+    private System.Timers.Timer? _elapsedTimer;
+
+    private string _playerName = "";
+    private string _sessionCode = "";
+    private string? _joinError;
+    private bool _connecting;
+
+    private SessionSeat _mySeat;
+    private IReadOnlyList<PlayerInfo> _players = [];
+    private bool _bothConnected;
+
+    private CampaignStateUpdate? _campaignState;
+    private bool _stageSolved;
+
+    private long ElapsedMs => _campaignState is null
+        ? 0
+        : (long)(DateTimeOffset.UtcNow - DateTimeOffset.FromUnixTimeMilliseconds(_campaignState.StartedAtUnixMs)).TotalMilliseconds;
+
+    private void GenerateCode()
+    {
+        const string alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        Span<char> chars = stackalloc char[4];
+        for (var i = 0; i < chars.Length; i++)
+        {
+            chars[i] = alphabet[Random.Shared.Next(alphabet.Length)];
+        }
+        _sessionCode = new string(chars);
+    }
+
+    // Generated fresh per page load rather than persisted to browser storage: sessionStorage is
+    // inherited when a tab is opened via "Duplicate", which made two duplicated windows collide
+    // into the same seat. A fresh in-memory token guarantees every window is a distinct player.
+    private static string CreatePlayerToken() => Guid.NewGuid().ToString("N");
+
+    private async Task JoinAsync()
+    {
+        _joinError = null;
+        if (string.IsNullOrWhiteSpace(_playerName) || string.IsNullOrWhiteSpace(_sessionCode))
+        {
+            _joinError = "Enter a name and a session code.";
+            return;
+        }
+
+        _connecting = true;
+        try
+        {
+            var hub = new HubConnectionBuilder()
+                .WithUrl(Navigation.ToAbsoluteUri(GameConstants.HubPath))
+                .WithAutomaticReconnect()
+                .Build();
+
+            RegisterHandlers(hub);
+            await hub.StartAsync();
+
+            var token = CreatePlayerToken();
+            var result = await hub.InvokeAsync<JoinSessionResult>("JoinSession", _sessionCode, _playerName, token);
+            if (!result.Success)
+            {
+                _joinError = result.Error;
+                await hub.DisposeAsync();
+                return;
+            }
+
+            _hub = hub;
+            _mySeat = result.Seat;
+            _sessionCode = result.SessionCode;
+            _stage = Stage.Playing;
+            StartElapsedTimer();
+        }
+        catch (Exception ex)
+        {
+            _joinError = $"Could not connect: {ex.Message}";
+        }
+        finally
+        {
+            _connecting = false;
+        }
+    }
+
+    private async Task LeaveAsync()
+    {
+        if (_hub is not null)
+        {
+            await _hub.DisposeAsync();
+            _hub = null;
+        }
+        _elapsedTimer?.Stop();
+        _stage = Stage.Join;
+        _players = [];
+        _campaignState = null;
+        _stageSolved = false;
+        _joinError = null;
+    }
+
+    private async Task StartAsync()
+    {
+        if (_hub is null) return;
+        await _hub.SendAsync("StartCampaign", _sessionCode);
+    }
+
+    private async Task AdvanceAsync()
+    {
+        if (_hub is null) return;
+        _stageSolved = false;
+        await _hub.SendAsync("AdvanceCampaign", _sessionCode);
+    }
+
+    private void HandleStageSolved()
+    {
+        _stageSolved = true;
+        StateHasChanged();
+    }
+
+    private void StartElapsedTimer()
+    {
+        _elapsedTimer = new System.Timers.Timer(1000);
+        _elapsedTimer.Elapsed += async (_, _) => await InvokeAsync(StateHasChanged);
+        _elapsedTimer.AutoReset = true;
+        _elapsedTimer.Start();
+    }
+
+    private static string GameLabel(CampaignGameKind kind) => kind switch
+    {
+        CampaignGameKind.Maze => "Maze Navigator",
+        CampaignGameKind.SymbolLock => "Symbol Lock",
+        CampaignGameKind.Bomb => "Bomb Defusal",
+        CampaignGameKind.Room => "Room Description",
+        _ => kind.ToString()
+    };
+
+    private static string FormatElapsed(long ms)
+    {
+        var span = TimeSpan.FromMilliseconds(ms);
+        return $"{(int)span.TotalMinutes}:{span.Seconds:00}";
+    }
+
+    private void RegisterHandlers(HubConnection hub)
+    {
+        hub.On<SessionStateUpdate>("OnSessionState", async update =>
+        {
+            _players = update.Players;
+            _bothConnected = update.BothConnected;
+            await InvokeAsync(StateHasChanged);
+        });
+
+        hub.On<CampaignStateUpdate>("OnCampaignState", async update =>
+        {
+            var stageChanged = _campaignState?.CurrentStageIndex != update.CurrentStageIndex || _campaignState?.Attempt != update.Attempt;
+            _campaignState = update;
+            if (stageChanged) _stageSolved = false;
+            if (update.Completed) _elapsedTimer?.Stop();
+            await InvokeAsync(StateHasChanged);
+        });
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _elapsedTimer?.Stop();
+        _elapsedTimer?.Dispose();
+        if (_hub is not null)
+        {
+            await _hub.DisposeAsync();
+        }
+    }
+}

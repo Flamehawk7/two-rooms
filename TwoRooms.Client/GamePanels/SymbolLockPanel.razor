@@ -1,0 +1,150 @@
+@using Microsoft.AspNetCore.SignalR.Client
+@using TwoRooms.Client.Game
+@implements IDisposable
+
+@if (_completed is not null)
+{
+    <div class="alert alert-success">
+        Lock opened in @FormatMs(_completed.TotalElapsedMs) with @_completed.TotalMistakeCount mistakes.
+        @if (_completed.BestCompletionMs is not null)
+        {
+            <text> Best so far: @FormatMs(_completed.BestCompletionMs.Value).</text>
+        }
+    </div>
+}
+else if (_door?.StageSolved ?? _codex?.StageSolved ?? false)
+{
+    <div class="alert alert-success">
+        Stage solved!
+        <button class="btn btn-sm btn-success ms-2" @onclick="AdvanceStageAsync">Continue</button>
+    </div>
+}
+
+@if (ShowNewLockControls)
+{
+    <div class="mb-3">
+        <span class="me-2">New lock:</span>
+        <button class="btn btn-sm btn-outline-primary me-2" @onclick='() => NewLockAsync(LockDifficulty.Single)'>Single Lock</button>
+        <button class="btn btn-sm btn-outline-primary" @onclick='() => NewLockAsync(LockDifficulty.MultiStage)'>Multi-Stage (3)</button>
+    </div>
+}
+
+@if (MySeat == SessionSeat.A)
+{
+    @if (_door is not null)
+    {
+        <p class="form-text">Stage @_door.Stage of @_door.TotalStages (@DifficultyLabel(_door.Difficulty))</p>
+        <div class="symbol-row">
+            @foreach (var symbol in _door.DoorSymbols)
+            {
+                <span class="symbol-tile">@symbol</span>
+            }
+        </div>
+        <p class="form-text mt-2">Describe these symbols (shape, in order) to the Codex Keeper.</p>
+    }
+}
+else
+{
+    @if (_codex is not null)
+    {
+        <p class="form-text">
+            Stage @_codex.Stage of @_codex.TotalStages (@DifficultyLabel(_codex.Difficulty))
+            &nbsp;|&nbsp; Mistakes: @_codex.StageMistakeCount (@_codex.TotalMistakeCount total)
+        </p>
+        <table class="table table-sm codex-table" style="max-width: 260px;">
+            <thead>
+                <tr><th>Symbol</th><th>Digit</th></tr>
+            </thead>
+            <tbody>
+                @foreach (var entry in _codex.Codex)
+                {
+                    <tr><td class="symbol-tile-sm">@entry.Symbol</td><td>@entry.Digit</td></tr>
+                }
+            </tbody>
+        </table>
+
+        <div class="input-group" style="max-width: 300px;">
+            <input class="form-control" @bind="_codeInput" @bind:event="oninput"
+                   disabled="@_codex.StageSolved" placeholder="Enter the code"
+                   @onkeydown="HandleCodeKeyDown" />
+            <button class="btn btn-primary" disabled="@_codex.StageSolved" @onclick="SubmitCodeAsync">Submit</button>
+        </div>
+    }
+}
+
+@code {
+    [Parameter, EditorRequired] public HubConnection Hub { get; set; } = null!;
+    [Parameter, EditorRequired] public string SessionCode { get; set; } = "";
+    [Parameter, EditorRequired] public SessionSeat MySeat { get; set; }
+    [Parameter] public bool ShowNewLockControls { get; set; } = true;
+    [Parameter] public EventCallback OnSolved { get; set; }
+
+    private DoorViewUpdate? _door;
+    private CodexViewUpdate? _codex;
+    private SymbolLockCompletedMessage? _completed;
+    private string _codeInput = "";
+    private readonly List<IDisposable> _subscriptions = [];
+
+    protected override void OnInitialized()
+    {
+        _subscriptions.Add(Hub.On<DoorViewUpdate>("OnSymbolLockDoor", async update =>
+        {
+            _door = update;
+            if (!update.AllStagesSolved) _completed = null;
+            await InvokeAsync(StateHasChanged);
+        }));
+
+        _subscriptions.Add(Hub.On<CodexViewUpdate>("OnSymbolLockCodex", async update =>
+        {
+            _codex = update;
+            if (!update.AllStagesSolved) _completed = null;
+            await InvokeAsync(StateHasChanged);
+        }));
+
+        _subscriptions.Add(Hub.On<SymbolLockStageResultMessage>("OnSymbolLockStageResult", async _ =>
+        {
+            await InvokeAsync(StateHasChanged);
+        }));
+
+        _subscriptions.Add(Hub.On<SymbolLockCompletedMessage>("OnSymbolLockCompleted", async result =>
+        {
+            _completed = result;
+            await InvokeAsync(StateHasChanged);
+            await OnSolved.InvokeAsync();
+        }));
+
+        _ = Hub.SendAsync("RequestSymbolLockState", SessionCode);
+    }
+
+    private async Task SubmitCodeAsync()
+    {
+        if (MySeat != SessionSeat.B || string.IsNullOrWhiteSpace(_codeInput)) return;
+        await Hub.SendAsync("SubmitSymbolLockCode", SessionCode, _codeInput.Trim());
+        _codeInput = "";
+    }
+
+    private async Task HandleCodeKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await SubmitCodeAsync();
+    }
+
+    private async Task AdvanceStageAsync()
+    {
+        await Hub.SendAsync("AdvanceSymbolLockStage", SessionCode);
+    }
+
+    private async Task NewLockAsync(LockDifficulty difficulty)
+    {
+        await Hub.SendAsync("NewSymbolLock", SessionCode, difficulty);
+    }
+
+    private static string DifficultyLabel(LockDifficulty difficulty) =>
+        difficulty == LockDifficulty.Single ? "Single Lock" : "Multi-Stage";
+
+    private static string FormatMs(long ms) => $"{ms / 1000.0:0.0}s";
+
+    public void Dispose()
+    {
+        foreach (var sub in _subscriptions) sub.Dispose();
+    }
+}
