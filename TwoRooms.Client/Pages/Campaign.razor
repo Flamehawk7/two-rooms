@@ -102,16 +102,16 @@ else
             @switch (currentKind)
             {
                 case CampaignGameKind.Maze:
-                    <MazePanel Hub="_hub" SessionCode="_sessionCode" MySeat="_mySeat" ShowNewMazeButton="false" OnSolved="HandleStageSolved" />
+                    <MazePanel @key="_campaignState.CurrentStageIndex" Hub="_hub" SessionCode="_sessionCode" MySeat="_mySeat" ShowNewMazeButton="false" OnSolved="HandleStageSolved" />
                     break;
                 case CampaignGameKind.SymbolLock:
-                    <SymbolLockPanel Hub="_hub" SessionCode="_sessionCode" MySeat="_mySeat" ShowNewLockControls="false" OnSolved="HandleStageSolved" />
+                    <SymbolLockPanel @key="_campaignState.CurrentStageIndex" Hub="_hub" SessionCode="_sessionCode" MySeat="_mySeat" ShowNewLockControls="false" OnSolved="HandleStageSolved" />
                     break;
                 case CampaignGameKind.Bomb:
-                    <BombPanel Hub="_hub" SessionCode="_sessionCode" MySeat="_mySeat" OnSolved="HandleStageSolved" />
+                    <BombPanel @key="_campaignState.CurrentStageIndex" Hub="_hub" SessionCode="_sessionCode" MySeat="_mySeat" OnSolved="HandleStageSolved" />
                     break;
                 case CampaignGameKind.Room:
-                    <RoomPanel Hub="_hub" SessionCode="_sessionCode" MySeat="_mySeat" ShowNewRoomButton="false" OnSolved="HandleStageSolved" />
+                    <RoomPanel @key="_campaignState.CurrentStageIndex" Hub="_hub" SessionCode="_sessionCode" MySeat="_mySeat" ShowNewRoomButton="false" OnSolved="HandleStageSolved" />
                     break;
             }
         }
