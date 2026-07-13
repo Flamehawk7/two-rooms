@@ -12,7 +12,7 @@
         }
     </div>
 }
-else if (_door?.StageSolved ?? _codex?.StageSolved ?? false)
+else if (_lastResult is { Correct: true, AllStagesSolved: false })
 {
     <div class="alert alert-success">
         Stage solved!
@@ -81,6 +81,7 @@ else
 
     private DoorViewUpdate? _door;
     private CodexViewUpdate? _codex;
+    private SymbolLockStageResultMessage? _lastResult;
     private SymbolLockCompletedMessage? _completed;
     private string _codeInput = "";
     private readonly List<IDisposable> _subscriptions = [];
@@ -90,6 +91,7 @@ else
         _subscriptions.Add(Hub.On<DoorViewUpdate>("OnSymbolLockDoor", async update =>
         {
             _door = update;
+            if (!update.StageSolved) _lastResult = null;
             if (!update.AllStagesSolved) _completed = null;
             await InvokeAsync(StateHasChanged);
         }));
@@ -97,12 +99,16 @@ else
         _subscriptions.Add(Hub.On<CodexViewUpdate>("OnSymbolLockCodex", async update =>
         {
             _codex = update;
+            if (!update.StageSolved) _lastResult = null;
             if (!update.AllStagesSolved) _completed = null;
             await InvokeAsync(StateHasChanged);
         }));
 
-        _subscriptions.Add(Hub.On<SymbolLockStageResultMessage>("OnSymbolLockStageResult", async _ =>
+        // Broadcast to both seats, unlike the door/codex refresh which currently only reaches the
+        // submitting seat -- this is what lets the OTHER seat find out the stage was solved too.
+        _subscriptions.Add(Hub.On<SymbolLockStageResultMessage>("OnSymbolLockStageResult", async result =>
         {
+            _lastResult = result;
             await InvokeAsync(StateHasChanged);
         }));
 
