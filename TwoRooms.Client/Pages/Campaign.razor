@@ -83,6 +83,7 @@ else
 
         <div class="mb-3">
             <h4>Stage @(_campaignState.CurrentStageIndex + 1) of @_campaignState.StageOrder.Count: @GameLabel(currentKind)</h4>
+            <p><strong>You are the:</strong> @RoleLabel(currentKind, _mySeat)</p>
             <p class="countdown">@FormatElapsed(ElapsedMs)</p>
         </div>
 
@@ -250,6 +251,19 @@ else
         CampaignGameKind.Bomb => "Bomb Defusal",
         CampaignGameKind.Room => "Room Description",
         _ => kind.ToString()
+    };
+
+    private static string RoleLabel(CampaignGameKind kind, SessionSeat seat) => (kind, seat) switch
+    {
+        (CampaignGameKind.Maze, SessionSeat.A) => "Guide (sees the map)",
+        (CampaignGameKind.Maze, SessionSeat.B) => "Explorer (moves)",
+        (CampaignGameKind.SymbolLock, SessionSeat.A) => "Reader (sees the door)",
+        (CampaignGameKind.SymbolLock, SessionSeat.B) => "Codex Keeper (has the mapping)",
+        (CampaignGameKind.Bomb, SessionSeat.A) => "Wire Viewer (sees the wires, cuts)",
+        (CampaignGameKind.Bomb, SessionSeat.B) => "Manual Holder (reads the rules)",
+        (CampaignGameKind.Room, SessionSeat.A) => "Outside (sees the truth)",
+        (CampaignGameKind.Room, SessionSeat.B) => "Inside (places objects)",
+        _ => seat.ToString()
     };
 
     private static string FormatElapsed(long ms)
